@@ -1,33 +1,40 @@
 define([
-        'Cesium/Core/Cartesian3',
-        'Cesium/Core/defined',
-        'Cesium/Core/formatError',
-        'Cesium/Core/Math',
-        'Cesium/Core/objectToQuery',
-        'Cesium/Core/queryToObject',
-        'Cesium/DataSources/CzmlDataSource',
-        'Cesium/DataSources/GeoJsonDataSource',
-        'Cesium/DataSources/KmlDataSource',
-        'Cesium/Scene/createTileMapServiceImageryProvider',
-        'Cesium/Widgets/Viewer/Viewer',
-        'Cesium/Widgets/Viewer/viewerCesiumInspectorMixin',
-        'Cesium/Widgets/Viewer/viewerDragDropMixin',
-        'domReady!'
-    ], function(
-        Cartesian3,
-        defined,
-        formatError,
-        CesiumMath,
-        objectToQuery,
-        queryToObject,
-        CzmlDataSource,
-        GeoJsonDataSource,
-        KmlDataSource,
-        createTileMapServiceImageryProvider,
-        Viewer,
-        viewerCesiumInspectorMixin,
-        viewerDragDropMixin) {
+    'Cesium/Core/Cartesian3',
+    'Cesium/Core/ComposerApi',
+    'Cesium/Scene/createComposerAsset',
+    'Cesium/Core/defined',
+    'Cesium/Core/formatError',
+    'Cesium/Core/Math',
+    'Cesium/Core/objectToQuery',
+    'Cesium/Core/queryToObject',
+    'Cesium/DataSources/CzmlDataSource',
+    'Cesium/DataSources/GeoJsonDataSource',
+    'Cesium/DataSources/KmlDataSource',
+    'Cesium/Scene/createTileMapServiceImageryProvider',
+    'Cesium/Widgets/Viewer/Viewer',
+    'Cesium/Widgets/Viewer/viewerCesiumInspectorMixin',
+    'Cesium/Widgets/Viewer/viewerDragDropMixin',
+    'domReady!'
+], function(
+    Cartesian3,
+    ComposerApi,
+    createComposerAsset,
+    defined,
+    formatError,
+    CesiumMath,
+    objectToQuery,
+    queryToObject,
+    CzmlDataSource,
+    GeoJsonDataSource,
+    KmlDataSource,
+    createTileMapServiceImageryProvider,
+    Viewer,
+    viewerCesiumInspectorMixin,
+    viewerDragDropMixin) {
     'use strict';
+
+    // ComposerApi.defaultToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI4ZTA4YzQyMC1hZmM3LTRiOGItOTgxYi1kNTBlNzI0NmJmNzYiLCJpZCI6MiwiaWF0IjoxNTExOTg2ODYxfQ.B_5IgcIvHtLEMgil79jPJl6MuYNbupO0d6LnbUTXsxI';
+    ComposerApi.defaultToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI4ZTA4YzQyMC1hZmM3LTRiOGItOTgxYi1kNTBlNzI0NmJmNzYiLCJpZCI6MiwiaWF0IjoxNTExOTg2ODYxfQ.B_5IgcIvHtLEMgil79jPJl6MuYNbupO0d6LnbUTXsxI';
 
     /*
      * 'debug'  : true/false,   // Full WebGL error reporting at substantial performance cost.
@@ -42,21 +49,17 @@ define([
      */
     var endUserOptions = queryToObject(window.location.search.substring(1));
 
-    var imageryProvider;
-    if (endUserOptions.tmsImageryUrl) {
-        imageryProvider = createTileMapServiceImageryProvider({
-            url : endUserOptions.tmsImageryUrl
-        });
-    }
-
     var loadingIndicator = document.getElementById('loadingIndicator');
     var viewer;
     try {
         viewer = new Viewer('cesiumContainer', {
-            imageryProvider : imageryProvider,
-            baseLayerPicker : !defined(imageryProvider),
-            scene3DOnly : endUserOptions.scene3DOnly
+            imageryProvider : false,
+            baseLayerPicker : false
         });
+        createComposerAsset(4)
+            .then(function(result) {
+                viewer.imageryLayers.addImageryProvider(result);
+            });
     } catch (exception) {
         loadingIndicator.style.display = 'none';
         var message = formatError(exception);
@@ -102,8 +105,8 @@ define([
             loadPromise = GeoJsonDataSource.load(source);
         } else if (/\.kml$/i.test(source) || /\.kmz$/i.test(source)) {
             loadPromise = KmlDataSource.load(source, {
-                camera: scene.camera,
-                canvas: scene.canvas
+                camera : scene.camera,
+                canvas : scene.canvas
             });
         } else {
             showLoadError(source, 'Unknown format.');
@@ -155,17 +158,18 @@ define([
             var roll = ((splitQuery.length > 5) && (!isNaN(+splitQuery[5]))) ? CesiumMath.toRadians(+splitQuery[5]) : undefined;
 
             viewer.camera.setView({
-                destination: Cartesian3.fromDegrees(longitude, latitude, height),
-                orientation: {
-                    heading: heading,
-                    pitch: pitch,
-                    roll: roll
+                destination : Cartesian3.fromDegrees(longitude, latitude, height),
+                orientation : {
+                    heading : heading,
+                    pitch : pitch,
+                    roll : roll
                 }
             });
         }
     }
 
     var camera = viewer.camera;
+
     function saveCamera() {
         var position = camera.positionCartographic;
         var hpr = '';
