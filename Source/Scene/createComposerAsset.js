@@ -8,6 +8,7 @@ define([
     '../Core/Check',
     '../Core/ComposerApi',
     '../Core/CesiumTerrainProvider',
+    '../Core/RequestOptions',
     '../DataSources/CzmlDataSource',
     '../DataSources/Entity',
     '../DataSources/KmlDataSource'
@@ -21,6 +22,7 @@ define([
     Check,
     ComposerApi,
     CesiumTerrainProvider,
+    RequestOptions,
     CzmlDataSource,
     Entity,
     KmlDataSource) {
@@ -42,6 +44,26 @@ define([
             .then(function(metadata) {
                 var type = metadata.type;
                 var assetToken = metadata.access_token;
+
+                function getRequestOptions() {
+                    return new RequestOptions({
+                        retryAttempts: 1,
+                        beforeRequest: function(url) {
+                            return url + '?access_token=' + assetToken;
+                        },
+                        retryOnError: function() {
+                            return loadJson('//api.composer.dev:8081/api/assets/' + assetId + '/endpoint?access_token=' + assetToken)
+                                .then(function(metadata) {
+                                    assetToken = metadata.access_token;
+                                    return true;
+                                })
+                                .otherwise(function() {
+                                    return false;
+                                });
+                        }
+                    });
+                }
+
                 if (type === ComposerAssetType.MODEL) {
                     return new Entity({
                         name : metadata.name,
@@ -70,6 +92,7 @@ define([
                     if (metadata.isExternal) {
                         metadata = metadata.externalConfiguration;
                     }
+                    metadata.requestOptions = getRequestOptions();
                     return new Cesium3DTileset(metadata);
                 } else if (type === ComposerAssetType.CZML) {
                     return CzmlDataSource.load(metadata.url);
@@ -81,25 +104,9 @@ define([
                     });
                 } else if (type === ComposerAssetType.IMAGERY) {
                     if (!metadata.isExternal) {
-                        var requestOptions = {
-                            retryAttempts: 1
-                        };
-                        requestOptions.beforeRequest =function(url) {
-                            return url + '?access_token=' + assetToken;
-                        };
-                        requestOptions.retryOnError = function() {
-                            return loadJson('//api.composer.dev:8081/api/assets/' + assetId + '/endpoint?access_token=' + assetToken)
-                                .then(function(metadata) {
-                                    assetToken = metadata.access_token;
-                                    return true;
-                                })
-                                .otherwise(function() {
-                                    return false;
-                                });
-                        };
                         return createTileMapServiceImageryProvider({
                             url : metadata.url,
-                            requestOptions : requestOptions
+                            requestOptions : getRequestOptions()
                         });
                     }
                     return ComposerExternalImageryType.getProvider(metadata.externalConfiguration);
@@ -107,7 +114,8 @@ define([
                     return new CesiumTerrainProvider({
                         url : metadata.isExternal ? metadata.externalConfiguration.url : metadata.url,
                         requestWaterMask : true,
-                        requestVertexNormals : true
+                        requestVertexNormals : true,
+                        requestOptions: getRequestOptions()
                     });
                 }
             });
