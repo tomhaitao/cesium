@@ -9,6 +9,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no">
   <title>Hello World!</title>
   <script src="../Build/Cesium/Cesium.js"></script>
+    <script src="./SampleData/windy.js"></script>
+    <script src="https://cdn.bootcss.com/jquery/3.3.1/jquery.min.js"></script>
   <style>
       @import url(../Build/Cesium/Widgets/widgets.css);
       html, body, #cesiumContainer {
@@ -20,6 +22,23 @@
   <div id="cesiumContainer"></div>
   <script>
     var viewer = new Cesium.Viewer('cesiumContainer');
+    $.ajax({
+        type: "get", url: "./SampleData/gfs.json", dataType: "json", success: function (e) {
+            var i = e[0].header;
+            viewer.camera.setView({destination: Cesium.Rectangle.fromDegrees(i.lo1, i.la2, i.lo2, i.la1)})
+            windy = new Windy(e, viewer)
+            redraw()
+        }, error: function (e) {
+            alert("请求数据失败1!")
+        }
+    })
+
+    var timer = null;
+    function redraw() {
+        timer = setInterval(function () {
+            windy.animate()
+        }, 100)
+    }
   </script>
 </body>
 </html>
