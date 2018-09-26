@@ -958,7 +958,10 @@ define([
         if (this._suspendTerrainAdjustment) {
             this._suspendTerrainAdjustment = !globeFinishedUpdating;
         }
-        this._adjustHeightForTerrain();
+
+        if (globeFinishedUpdating) {
+            this._adjustHeightForTerrain();
+        }
     };
 
     var setTransformPosition = new Cartesian3();
@@ -1003,7 +1006,7 @@ define([
         }
 
         var scene = this._scene;
-        var globe = scene._globe;
+        var globe = scene.globe;
         var rayIntersection;
         var depthIntersection;
 
@@ -1013,7 +1016,7 @@ define([
             mousePosition.y = scene.drawingBufferHeight / 2.0;
 
             var ray = this.getPickRay(mousePosition, pickGlobeScratchRay);
-            rayIntersection = globe.pick(ray, scene, scratchRayIntersection);
+            rayIntersection = globe.pickWorldCoordinates(ray, scene, scratchRayIntersection);
 
             if (scene.pickPositionSupported) {
                 depthIntersection = scene.pickPositionWorldCoordinates(mousePosition, scratchDepthIntersection);
@@ -2414,7 +2417,7 @@ define([
     function pickMap2D(camera, windowPosition, projection, result) {
         var ray = camera.getPickRay(windowPosition, pickEllipsoid2DRay);
         var position = ray.origin;
-        position.z = 0.0;
+        position = Cartesian3.fromElements(position.y, position.z, 0.0, position);
         var cart = projection.unproject(position);
 
         if (cart.latitude < -CesiumMath.PI_OVER_TWO || cart.latitude > CesiumMath.PI_OVER_TWO) {
@@ -2536,7 +2539,7 @@ define([
 
         Cartesian3.clone(camera.directionWC, result.direction);
 
-        if (camera._mode === SceneMode.COLUMBUS_VIEW) {
+        if (camera._mode === SceneMode.COLUMBUS_VIEW || camera._mode === SceneMode.SCENE2D) {
             Cartesian3.fromElements(result.origin.z, result.origin.x, result.origin.y, result.origin);
         }
 
@@ -2574,13 +2577,10 @@ define([
     var scratchProj = new Cartesian3();
 
     /**
-     * Return the signed distance from the camera to the front of the bounding sphere.
-     * <p>
-     * Positive values indicate that the bounding sphere is in the positive half-plane of the camera position and view direction while a negative value indicates it is in the negative half-plane.
-     * </p>
+     * Return the distance from the camera to the front of the bounding sphere.
      *
      * @param {BoundingSphere} boundingSphere The bounding sphere in world coordinates.
-     * @returns {Number} The signed distance to the bounding sphere.
+     * @returns {Number} The distance to the bounding sphere.
      */
     Camera.prototype.distanceToBoundingSphere = function(boundingSphere) {
         //>>includeStart('debug', pragmas.debug);
@@ -2590,10 +2590,8 @@ define([
         //>>includeEnd('debug');
 
         var toCenter = Cartesian3.subtract(this.positionWC, boundingSphere.center, scratchToCenter);
-        var distance = -Cartesian3.dot(toCenter, this.directionWC);
-        var proj = Cartesian3.multiplyByScalar(this.directionWC, distance, scratchProj);
-        var unsignedDistance = Math.max(0.0, Cartesian3.magnitude(proj) - boundingSphere.radius);
-        return distance < 0.0 ? -unsignedDistance : unsignedDistance;
+        var proj = Cartesian3.multiplyByScalar(this.directionWC, Cartesian3.dot(toCenter, this.directionWC), scratchProj);
+        return Math.max(0.0, Cartesian3.magnitude(proj) - boundingSphere.radius);
     };
 
     var scratchPixelSize = new Cartesian2();
@@ -2620,9 +2618,6 @@ define([
         //>>includeEnd('debug');
 
         var distance = this.distanceToBoundingSphere(boundingSphere);
-        if (distance < 0.0) {
-            return 0.0;
-        }
         var pixelSize = this.frustum.getPixelDimensions(drawingBufferWidth, drawingBufferHeight, distance, scratchPixelSize);
         return Math.max(pixelSize.x, pixelSize.y);
     };

@@ -11,9 +11,8 @@ define([
         '../Core/deprecationWarning',
         '../Core/destroyObject',
         '../Core/DeveloperError',
-        '../Core/FeatureDetection',
+        '../Core/Event',
         '../Core/Intersect',
-        '../Core/Math',
         '../Core/Matrix4',
         '../Core/PixelFormat',
         '../Core/Plane',
@@ -38,9 +37,8 @@ define([
         deprecationWarning,
         destroyObject,
         DeveloperError,
-        FeatureDetection,
+        Event,
         Intersect,
-        CesiumMath,
         Matrix4,
         PixelFormat,
         Plane,
@@ -57,6 +55,13 @@ define([
     /**
      * Specifies a set of clipping planes. Clipping planes selectively disable rendering in a region on the
      * outside of the specified list of {@link ClippingPlane} objects for a single gltf model, 3D Tileset, or the globe.
+     * <p>
+     * In general the clipping planes' coordinates are relative to the object they're attached to, so a plane with distance set to 0 will clip
+     * through the center of the object.
+     * </p>
+     * <p>
+     * For 3D Tiles, the root tile's transform is used to position the clipping planes. If a transform is not defined, the root tile's {@link Cesium3DTile#boundingSphere} is used instead.
+     * </p>
      *
      * @alias ClippingPlaneCollection
      * @constructor
@@ -65,30 +70,43 @@ define([
      * @param {ClippingPlane[]} [options.planes=[]] An array of {@link ClippingPlane} objects used to selectively disable rendering on the outside of each plane.
      * @param {Boolean} [options.enabled=true] Determines whether the clipping planes are active.
      * @param {Matrix4} [options.modelMatrix=Matrix4.IDENTITY] The 4x4 transformation matrix specifying an additional transform relative to the clipping planes original coordinate system.
-     * @param {Boolean} [options.unionClippingRegions=false] If true, a region will be clipped if included in any plane in the collection. Otherwise, the region to be clipped must intersect the regions defined by all planes in this collection.
+     * @param {Boolean} [options.unionClippingRegions=false] If true, a region will be clipped if it is on the outside of any plane in the collection. Otherwise, a region will only be clipped if it is on the outside of every plane.
      * @param {Color} [options.edgeColor=Color.WHITE] The color applied to highlight the edge along which an object is clipped.
      * @param {Number} [options.edgeWidth=0.0] The width, in pixels, of the highlight applied to the edge along which an object is clipped.
+     *
+     * @demo {@link https://cesiumjs.org/Cesium/Build/Apps/Sandcastle/?src=3D%20Tiles%20Clipping%20Planes.html|Clipping 3D Tiles and glTF models.}
+     * @demo {@link https://cesiumjs.org/Cesium/Build/Apps/Sandcastle/?src=Terrain%20Clipping%20Planes.html|Clipping the Globe.}
+     *
+     * @example
+     * // This clipping plane's distance is positive, which means its normal
+     * // is facing the origin. This will clip everything that is behind
+     * // the plane, which is anything with y coordinate < -5.
+     * var clippingPlanes = new Cesium.ClippingPlaneCollection({
+     *     planes : [
+     *         new Cesium.ClippingPlane(new Cesium.Cartesian3(0.0, 1.0, 0.0), 5.0)
+     *     ],
+     * });
+     * // Create an entity and attach the ClippingPlaneCollection to the model.
+     * var entity = viewer.entities.add({
+     *     position : Cesium.Cartesian3.fromDegrees(-123.0744619, 44.0503706, 10000),
+     *     model : {
+     *         uri : 'model.gltf',
+     *         minimumPixelSize : 128,
+     *         maximumScale : 20000,
+     *         clippingPlanes : clippingPlanes
+     *     }
+     * });
+     * viewer.zoomTo(entity);
      */
     function ClippingPlaneCollection(options) {
         options = defaultValue(options, defaultValue.EMPTY_OBJECT);
 
         this._planes = [];
-        this._containsUntrackablePlanes = false;
 
         // Do partial texture updates if just one plane is dirty.
         // If many planes are dirty, refresh the entire texture.
         this._dirtyIndex = -1;
         this._multipleDirtyPlanes = false;
-
-        // Add each plane to check if it's actually a Plane object instead of a ClippingPlane.
-        // Use of Plane objects will be deprecated.
-        var planes = options.planes;
-        if (defined(planes)) {
-            var planesLength = planes.length;
-            for (var i = 0; i < planesLength; ++i) {
-                this.add(planes[i]);
-            }
-        }
 
         this._enabled = defaultValue(options.enabled, true);
 
@@ -117,6 +135,22 @@ define([
          */
         this.edgeWidth = defaultValue(options.edgeWidth, 0.0);
 
+        /**
+         * An event triggered when a new clipping plane is added to the collection.  Event handlers
+         * are passed the new plane and the index at which it was added.
+         * @type {Event}
+         * @default Event()
+         */
+        this.planeAdded = new Event();
+
+        /**
+         * An event triggered when a new clipping plane is removed from the collection.  Event handlers
+         * are passed the new plane and the index from which it was removed.
+         * @type {Event}
+         * @default Event()
+         */
+        this.planeRemoved = new Event();
+
         // If this ClippingPlaneCollection has an owner, only its owner should update or destroy it.
         // This is because in a Cesium3DTileset multiple models may reference the tileset's ClippingPlaneCollection.
         this._owner = undefined;
@@ -129,6 +163,15 @@ define([
         this._float32View = undefined;
 
         this._clippingPlanesTexture = undefined;
+
+        // Add each ClippingPlane object.
+        var planes = options.planes;
+        if (defined(planes)) {
+            var planesLength = planes.length;
+            for (var i = 0; i < planesLength; ++i) {
+                this.add(planes[i]);
+            }
+        }
     }
 
     function unionIntersectFunction(value) {
@@ -156,8 +199,9 @@ define([
         },
 
         /**
-         * If true, a region will be clipped if included in any plane in the collection. Otherwise, the region
-         * to be clipped must intersect the regions defined by all planes in this collection.
+         * If true, a region will be clipped if it is on the outside of any plane in the
+         * collection. Otherwise, a region will only be clipped if it is on the
+         * outside of every plane.
          *
          * @memberof ClippingPlaneCollection.prototype
          * @type {Boolean}
@@ -260,18 +304,16 @@ define([
      */
     ClippingPlaneCollection.prototype.add = function(plane) {
         var newPlaneIndex = this._planes.length;
-        if (plane instanceof ClippingPlane) {
-            var that = this;
-            plane.onChangeCallback = function(index) {
-                setIndexDirty(that, index);
-            };
-            plane.index = newPlaneIndex;
-        } else {
-            deprecationWarning('ClippingPlaneCollection.add', 'Ability to use Plane objects with ClippingPlaneCollection.add is deprecated and will be removed in Cesium 1.45. Please use ClippingPlane objects instead.');
-            this._containsUntrackablePlanes = true;
-        }
+
+        var that = this;
+        plane.onChangeCallback = function(index) {
+            setIndexDirty(that, index);
+        };
+        plane.index = newPlaneIndex;
+
         setIndexDirty(this, newPlaneIndex);
         this._planes.push(plane);
+        this.planeAdded.raiseEvent(plane, newPlaneIndex);
     };
 
     /**
@@ -355,6 +397,8 @@ define([
         this._multipleDirtyPlanes = true;
         planes.length = length;
 
+        this.planeRemoved.raiseEvent(clippingPlane, index);
+
         return true;
     };
 
@@ -374,6 +418,7 @@ define([
                 plane.onChangeCallback = undefined;
                 plane.index = -1;
             }
+            this.planeRemoved.raiseEvent(plane, i);
         }
         this._multipleDirtyPlanes = true;
         this._planes = [];
@@ -468,7 +513,8 @@ define([
 
         if (!defined(clippingPlanesTexture)) {
             // Allocate twice as much space as needed to avoid frequent texture reallocation.
-            requiredResolution.x *= 2;
+            // Allocate in the Y direction, since texture may be as wide as context texture support.
+            requiredResolution.y *= 2;
 
             var sampler = new Sampler({
                 wrapS : TextureWrap.CLAMP_TO_EDGE,
@@ -505,20 +551,18 @@ define([
             this._multipleDirtyPlanes = true;
         }
 
-        // Use of Plane objects will be deprecated.
-        // But until then, we have no way of telling if they changed since last frame, so we have to do a full udpate.
-        var refreshFullTexture = this._multipleDirtyPlanes || this._containsUntrackablePlanes;
         var dirtyIndex = this._dirtyIndex;
-
-        if (!refreshFullTexture && dirtyIndex === -1) {
+        if (!this._multipleDirtyPlanes && dirtyIndex === -1) {
             return;
         }
-
-        if (!refreshFullTexture) {
+        if (!this._multipleDirtyPlanes) {
             // partial updates possible
-            var offsetY = Math.floor(dirtyIndex / clippingPlanesTexture.width);
-            var offsetX = Math.floor(dirtyIndex - offsetY * clippingPlanesTexture.width);
+            var offsetX = 0;
+            var offsetY = 0;
             if (useFloatTexture) {
+                offsetY = Math.floor(dirtyIndex / clippingPlanesTexture.width);
+                offsetX = Math.floor(dirtyIndex - offsetY * clippingPlanesTexture.width);
+
                 packPlanesAsFloats(this, dirtyIndex, dirtyIndex + 1);
                 clippingPlanesTexture.copyFrom({
                     width : 1,
@@ -526,6 +570,9 @@ define([
                     arrayBufferView : this._float32View
                 }, offsetX, offsetY);
             } else {
+                offsetY = Math.floor((dirtyIndex * 2) / clippingPlanesTexture.width);
+                offsetX = Math.floor((dirtyIndex * 2) - offsetY * clippingPlanesTexture.width);
+
                 packPlanesAsUint8(this, dirtyIndex, dirtyIndex + 1);
                 clippingPlanesTexture.copyFrom({
                     width : 2,
@@ -553,47 +600,6 @@ define([
         this._dirtyIndex = -1;
     };
 
-    /**
-     * Duplicates this ClippingPlaneCollection instance.
-     *
-     * @param {ClippingPlaneCollection} [result] The object onto which to store the result.
-     * @returns {ClippingPlaneCollection} The modified result parameter or a new ClippingPlaneCollection instance if one was not provided.
-     */
-    ClippingPlaneCollection.prototype.clone = function(result) {
-        if (!defined(result)) {
-            result = new ClippingPlaneCollection();
-        }
-
-        var length = this.length;
-        var i;
-        if (result.length !== length) {
-            var planes = result._planes;
-            var index = planes.length;
-
-            planes.length = length;
-            for (i = index; i < length; ++i) {
-                result._planes[i] = new ClippingPlane(Cartesian3.UNIT_X, 0.0);
-            }
-        }
-
-        for (i = 0; i < length; ++i) {
-            var resultPlane = result._planes[i];
-            resultPlane.index = i;
-            resultPlane.onChangeCallback = function(index) {
-                setIndexDirty(result, index);
-            };
-            ClippingPlane.clone(this._planes[i], resultPlane);
-        }
-
-        result.enabled = this.enabled;
-        Matrix4.clone(this.modelMatrix, result.modelMatrix);
-        result.unionClippingRegions = this.unionClippingRegions;
-        Color.clone(this.edgeColor, result.edgeColor);
-        result.edgeWidth = this.edgeWidth;
-
-        return result;
-    };
-
     var scratchMatrix = new Matrix4();
     var scratchPlane = new Plane(Cartesian3.UNIT_X, 0.0);
     /**
@@ -613,7 +619,7 @@ define([
 
         var modelMatrix = this.modelMatrix;
         if (defined(transform)) {
-            modelMatrix = Matrix4.multiply(modelMatrix, transform, scratchMatrix);
+            modelMatrix = Matrix4.multiply(transform, modelMatrix, scratchMatrix);
         }
 
         // If the collection is not set to union the clipping regions, the volume must be outside of all planes to be
@@ -669,17 +675,6 @@ define([
     };
 
     /**
-     * Determines if rendering with clipping planes is supported.
-     *
-     * @returns {Boolean} <code>true</code> if ClippingPlaneCollections are supported
-     * @deprecated
-     */
-    ClippingPlaneCollection.isSupported = function() {
-        deprecationWarning('ClippingPlaneCollection.isSupported', 'ClippingPlaneCollection.isSupported is deprecated and will be removed in Cesium 1.45. Clipping Planes are now supported on all platforms capable of running Cesium.');
-        return true;
-    };
-
-    /**
      * Function for checking if the context will allow clipping planes with floating point textures.
      *
      * @param {Context} context The Context that will contain clipped objects and clipping textures.
@@ -688,6 +683,33 @@ define([
      */
     ClippingPlaneCollection.useFloatTexture = function(context) {
         return context.floatingPointTexture;
+    };
+
+    /**
+     * Function for getting the clipping plane collection's texture resolution.
+     * If the ClippingPlaneCollection hasn't been updated, returns the resolution that will be
+     * allocated based on the current plane count.
+     *
+     * @param {ClippingPlaneCollection} clippingPlaneCollection The clipping plane collection
+     * @param {Context} context The rendering context
+     * @param {Cartesian2} result A Cartesian2 for the result.
+     * @returns {Cartesian2} The required resolution.
+     * @private
+     */
+    ClippingPlaneCollection.getTextureResolution = function(clippingPlaneCollection, context, result) {
+        var texture = clippingPlaneCollection.texture;
+        if (defined(texture)) {
+            result.x = texture.width;
+            result.y = texture.height;
+            return result;
+        }
+
+        var pixelsNeeded = ClippingPlaneCollection.useFloatTexture(context) ? clippingPlaneCollection.length : clippingPlaneCollection.length * 2;
+        var requiredResolution = computeTextureResolution(pixelsNeeded, result);
+
+        // Allocate twice as much space as needed to avoid frequent texture reallocation.
+        requiredResolution.y *= 2;
+        return requiredResolution;
     };
 
     /**
