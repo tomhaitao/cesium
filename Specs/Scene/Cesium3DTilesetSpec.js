@@ -1,5 +1,6 @@
 defineSuite([
         'Scene/Cesium3DTileset',
+        'Core/Cartesian2',
         'Core/Cartesian3',
         'Core/Color',
         'Core/defined',
@@ -32,6 +33,7 @@ defineSuite([
         'ThirdParty/when'
     ], function(
         Cesium3DTileset,
+        Cartesian2,
         Cartesian3,
         Color,
         defined,
@@ -1216,6 +1218,23 @@ defineSuite([
             });
         });
 
+        it('does not select external tileset whose root has invisible children', function() {
+            return Cesium3DTilesTester.loadTileset(scene, tilesetOfTilesetsUrl).then(function(tileset) {
+                var center = Cartesian3.fromRadians(centerLongitude, centerLatitude, 50.0);
+                scene.camera.lookAt(center, new HeadingPitchRange(0.0, 1.57, 1.0));
+                var root = tileset.root;
+                var externalRoot = root.children[0];
+                externalRoot.refine = Cesium3DTileRefine.REPLACE;
+                scene.renderForSpecs();
+
+                expect(isSelected(tileset, root)).toBe(false);
+                expect(isSelected(tileset, externalRoot)).toBe(false);
+                expect(root._visible).toBe(false);
+                expect(externalRoot._visible).toBe(false);
+                expect(tileset.statistics.numberOfTilesCulledWithChildrenUnion).toBe(1);
+            });
+        });
+
         it('does not select visible tiles not meeting SSE with visible children', function() {
             return Cesium3DTilesTester.loadTileset(scene, tilesetReplacementWithViewerRequestVolumeUrl).then(function(tileset) {
                 var root = tileset.root;
@@ -1770,16 +1789,19 @@ defineSuite([
     it('all tiles loaded event is raised', function() {
         // Called first when only the root is visible and it becomes loaded, and then again when
         // the rest of the tileset is visible and all tiles are loaded.
-        var spyUpdate = jasmine.createSpy('listener');
+        var spyUpdate1 = jasmine.createSpy('listener');
+        var spyUpdate2 = jasmine.createSpy('listener');
         viewRootOnly();
         var tileset = scene.primitives.add(new Cesium3DTileset({
             url : tilesetUrl
         }));
-        tileset.allTilesLoaded.addEventListener(spyUpdate);
+        tileset.allTilesLoaded.addEventListener(spyUpdate1);
+        tileset.initialTilesLoaded.addEventListener(spyUpdate2);
         return Cesium3DTilesTester.waitForTilesLoaded(scene, tileset).then(function() {
             viewAllTiles();
             return Cesium3DTilesTester.waitForTilesLoaded(scene, tileset).then(function() {
-                expect(spyUpdate.calls.count()).toEqual(2);
+                expect(spyUpdate1.calls.count()).toEqual(2);
+                expect(spyUpdate2.calls.count()).toEqual(1);
             });
         });
     });
@@ -1896,6 +1918,30 @@ defineSuite([
                 fail('should not resolve');
             }).otherwise(function(error) {
                 expect(root._contentState).toBe(Cesium3DTileContentState.FAILED);
+            });
+        });
+    });
+
+    it('renders with imageBaseLightingFactor', function() {
+        return Cesium3DTilesTester.loadTileset(scene, withoutBatchTableUrl).then(function(tileset) {
+            expect(scene).toRenderAndCall(function(rgba) {
+                expect(rgba).not.toEqual([0, 0, 0, 255]);
+                tileset.imageBasedLightingFactor = new Cartesian2(0.0, 0.0);
+                expect(scene).notToRender(rgba);
+            });
+        });
+    });
+
+    it('renders with lightColor', function() {
+        return Cesium3DTilesTester.loadTileset(scene, withoutBatchTableUrl).then(function(tileset) {
+            expect(scene).toRenderAndCall(function(rgba) {
+                expect(rgba).not.toEqual([0, 0, 0, 255]);
+                tileset.imageBasedLightingFactor = new Cartesian2(0.0, 0.0);
+                expect(scene).toRenderAndCall(function(rgba2) {
+                    expect(rgba2).not.toEqual(rgba);
+                    tileset.lightColor = new Cartesian3(5.0, 5.0, 5.0);
+                    expect(scene).notToRender(rgba2);
+                });
             });
         });
     });
@@ -2049,9 +2095,9 @@ defineSuite([
         return Cesium3DTilesTester.loadTileset(scene, withBatchTableUrl).then(function(tileset) {
             tileset.style = new Cesium3DTileStyle({color: 'color("red")'});
             scene.renderForSpecs();
-            expect(tileset.statistics.numberOfTilesStyled).toBe(1);
+            expect(tileset._statisticsLastRender.numberOfTilesStyled).toBe(1);
             scene.pickForSpecs();
-            expect(tileset.statistics.numberOfTilesStyled).toBe(0);
+            expect(tileset._statisticsLastPick.numberOfTilesStyled).toBe(0);
         });
     });
 
